@@ -19,24 +19,10 @@ library(tidyr)
 library(stringr)
 
 #################################
-# 2. Load and Process MHCLD Data
+# 2. Load and Process MHCLD Data for Multiple States
 #################################
 
-load_mhcld <- function(file_path, year) {
-  env <- new.env()
-  load(file_path, envir = env)
-  df_name <- ls(env)[1]
-  df <- get(df_name, envir = env)
-  if (!is.data.frame(df)) {
-    stop("The loaded object is not a data frame")
-  }
-  # Filter by STATEFIP = 41 (Oregon)
-  df <- df %>%
-    filter(STATEFIP == 41) %>%
-    mutate(year = year)
-  return(df)
-}
-
+# Define the list of MHCLD .rdata files (one for each year)
 mhcld_files <- list(
   "data/MHCLD/mhcld_puf_2013.rdata",
   "data/MHCLD/mhcld_puf_2014.rdata",
@@ -44,14 +30,61 @@ mhcld_files <- list(
   "data/MHCLD/MHCLD_PUF_2016.rdata",
   "data/MHCLD/MHCLD_PUF_2017.rdata"
 )
-mhcld_oregon <- bind_rows(
-  load_mhcld(mhcld_files[[1]], 2013),
-  load_mhcld(mhcld_files[[2]], 2014),
-  load_mhcld(mhcld_files[[3]], 2015),
-  load_mhcld(mhcld_files[[4]], 2016),
-  load_mhcld(mhcld_files[[5]], 2017)
-) %>%
-  mutate(Legalized = ifelse(year >= 2015, 1, 0))
+
+# Define a named list of states and their corresponding STATEFIP codes
+state_ids <- list(
+  oregon        = 41,
+  california    = 6,
+  colorado      = 8,
+  maine         = 23,
+  massachusetts = 25,
+  nevada        = 32,
+  washington    = 53
+)
+
+# Modified function: load a given file for a specific year and state
+load_mhcld <- function(file_path, year, state_id) {
+  env <- new.env()
+  load(file_path, envir = env)
+  df_name <- ls(env)[1]
+  df <- get(df_name, envir = env)
+  if (!is.data.frame(df)) {
+    stop("The loaded object is not a data frame")
+  }
+  # Filter by the given STATEFIP and add the year column
+  df <- df %>%
+    filter(STATEFIP == state_id) %>%
+    mutate(year = year)
+  return(df)
+}
+
+# For each state, bind rows from all years and add a Legalized flag 
+mhcld_list <- list()  # to store data frames for each state
+for (state in names(state_ids)) {
+  state_id <- state_ids[[state]]
+  # Combine the data for each year
+  state_df <- bind_rows(
+    load_mhcld(mhcld_files[[1]], 2013, state_id),
+    load_mhcld(mhcld_files[[2]], 2014, state_id),
+    load_mhcld(mhcld_files[[3]], 2015, state_id),
+    load_mhcld(mhcld_files[[4]], 2016, state_id),
+    load_mhcld(mhcld_files[[5]], 2017, state_id)
+  ) %>%
+    # Add a Legalized variable: 1 for years >= 2015, 0 otherwise
+    mutate(Legalized = ifelse(year >= 2015, 1, 0))
+  
+  # Store the resulting data frame in the list with the state name as key
+  mhcld_list[[state]] <- state_df
+}
+
+# Optionally, assign each state’s data frame to its own object:
+mhcld_oregon       <- mhcld_list[["oregon"]]
+mhcld_california   <- mhcld_list[["california"]]
+mhcld_colorado     <- mhcld_list[["colorado"]]
+mhcld_maine        <- mhcld_list[["maine"]]
+mhcld_massachusetts<- mhcld_list[["massachusetts"]]
+mhcld_nevada       <- mhcld_list[["nevada"]]
+mhcld_washington   <- mhcld_list[["washington"]]
 
 #################################
 # 3. Load and Process ACS Data
