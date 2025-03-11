@@ -77,7 +77,7 @@ for (state in names(state_ids)) {
   mhcld_list[[state]] <- state_df
 }
 
-# Optionally, assign each state’s data frame to its own object:
+# Assign each state’s data frame to its own object
 mhcld_oregon       <- mhcld_list[["oregon"]]
 mhcld_california   <- mhcld_list[["california"]]
 mhcld_colorado     <- mhcld_list[["colorado"]]
@@ -196,7 +196,113 @@ p2 <- read_csv("data/P2-urban-rural-2020.csv") %>%
   select(State, Statistic, everything())
 
 #################################
-# 5. Run Model
+# 5. Load and Process NSDUH Data
+#################################
+
+# Helper function to determine number of rows to skip based on header row content
+get_skip_value <- function(file, header_keywords = c("Order", "State")) {
+  # Read the first 10 lines of the file
+  lines <- readLines(file, n = 10)
+  
+  # Look for a line that starts with one of the header keywords
+  header_line_index <- which(sapply(header_keywords, function(kw) {
+    any(grepl(paste0("^", kw), lines))
+  }))
+  
+  # Determine the actual line where the header appears
+  # Here we search each line for any of the keywords
+  header_line <- NA
+  for (i in seq_along(lines)) {
+    if (any(sapply(header_keywords, function(kw) grepl(paste0("^", kw), lines[i])))) {
+      header_line <- i
+      break
+    }
+  }
+  
+  # If a header was found, skip the rows before the header; otherwise, use a default value (e.g., 5)
+  if (!is.na(header_line) && header_line > 1) {
+    return(header_line - 1)
+  } else {
+    return(5)  # Default skip value if header not found
+  }
+}
+
+# 1) Define the folders where NSDUH data for each year are located
+nsduh_folders <- c(
+  "data/NSDUH/NSDUHsaeTotalsCSVs2013",
+  "data/NSDUH/NSDUHsaeTotalsCSVs2015",
+  "data/NSDUH/NSDUHsaeTotalsCSVs2016",
+  "data/NSDUH/NSDUHsaeTotalsCSVs2017"
+)
+
+# 2) Helper function to extract the year from the folder name (e.g., "NSDUHsaeTotalsCSVs2013" -> 2013)
+extract_year_from_folder <- function(folder_path) {
+  folder_name <- basename(folder_path)
+  as.numeric(str_extract(folder_name, "\\d{4}"))
+}
+
+# 3) Define the states
+relevant_states <- c("Oregon", "California", "Colorado", "Maine", "Massachusetts", "Nevada", "Washington")
+
+# 4) Initialize empty lists to accumulate data for each state and measure
+nsduh_mj_data_list <- list()  # For Marijuana Use
+nsduh_mi_data_list <- list()  # For Mental Illness
+
+# Initialize an empty data frame for each state in each list
+for (st in relevant_states) {
+  nsduh_mj_data_list[[st]] <- tibble()  # Using tibble for consistency with readr output
+  nsduh_mi_data_list[[st]] <- tibble()
+}
+
+# 5) Loop over each folder (year) and process data files
+for (folder in nsduh_folders) {
+  
+  # Determine the year from the folder name
+  this_year <- extract_year_from_folder(folder)
+  
+  # Identify the two CSV files (one for Marijuana Use, one for Mental Illness)
+  csv_files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  
+  # Pattern matching: "27" for Marijuana Use, "02" for Mental Illness
+  mj_file <- csv_files[grepl("27", csv_files, ignore.case = TRUE)]
+  mi_file <- csv_files[grepl("02", csv_files, ignore.case = TRUE)]
+  
+  # Determine dynamic skip values for each file
+  skip_mj <- get_skip_value(mj_file)
+  skip_mi <- get_skip_value(mi_file)
+  
+  # Read each CSV with dynamic skip rows (treat all columns as character)
+  nsduh_mj <- read_csv(mj_file, skip = skip_mj, col_types = cols(.default = "c"))
+  nsduh_mi <- read_csv(mi_file, skip = skip_mi, col_types = cols(.default = "c"))
+  
+  # Add a year column
+  nsduh_mj <- nsduh_mj %>% mutate(year = this_year)
+  nsduh_mi <- nsduh_mi %>% mutate(year = this_year)
+  
+  # 6) For each state, filter the data and append to the accumulated list
+  for (st in relevant_states) {
+    
+    # For Marijuana Use
+    st_mj <- nsduh_mj %>% filter(State == st)
+    # For Mental Illness
+    st_mi <- nsduh_mi %>% filter(State == st)
+    
+    # Append the data for this year
+    nsduh_mj_data_list[[st]] <- bind_rows(nsduh_mj_data_list[[st]], st_mj)
+    nsduh_mi_data_list[[st]] <- bind_rows(nsduh_mi_data_list[[st]], st_mi)
+  }
+}
+
+nsduh_mj <- bind_rows(nsduh_mj_data_list)
+nsduh_mi <- bind_rows(nsduh_mi_data_list)
+
+nsduh_mj <- nsduh_mj %>% select(-Order)
+nsduh_mi <- nsduh_mi %>% select(-Order)
+
+rm(st_mj, st_mi)
+
+#################################
+# 6. Run Model
 #################################
 model <- glm(SCHIZOFLG ~ Legalized, data = mhcld_oregon, family = binomial)
 summary(model)
