@@ -192,8 +192,24 @@ p2 <- read_csv("data/P2-urban-rural-2020.csv") %>%
     values_to = "Value"
   ) %>%
   rename(Statistic = `Label (Grouping)`) %>%
-  filter(!(Statistic %in% c("Total:"))) %>%
-  select(State, Statistic, everything())
+  filter(!grepl("Not defined for this file", Statistic)) %>%
+  # Rename "Total:" to "Total"
+  mutate(Statistic = if_else(Statistic == "Total:", "Total", Statistic)) %>%
+  mutate(Statistic = str_trim(Statistic)) %>%
+  # Convert Value to numeric (if necessary)
+  mutate(Value = as.numeric(Value)) %>%
+  group_by(State) %>%
+  # Get the total value for the state (from the row where Statistic is "Total")
+  mutate(total_value = Value[Statistic == "Total"]) %>%
+  # Create the Proportion column only for Urban and Rural rows
+  mutate(Proportion = if_else(Statistic %in% c("Urban", "Rural"),
+                              Value / total_value,
+                              NA_real_)) %>%
+  ungroup() %>%
+  # Remove the temporary column
+  select(-total_value)
+
+rm(p2_raw)
 
 #################################
 # 5. Load and Process NSDUH Data
