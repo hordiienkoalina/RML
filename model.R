@@ -98,7 +98,14 @@ for (state in names(state_ids)) {
 
 # Combine data for all states and remove the STATEFIP column
 mhcld_all <- bind_rows(mhcld_list) %>% 
-  select(-STATEFIP)
+  select(-STATEFIP) %>%
+  # Replace invalid entries (-9) with NA
+  mutate(
+    across(where(is.numeric), ~ na_if(., -9)),
+    across(where(is.character), ~ na_if(., "-9"))
+  ) %>%
+  # Remove rows where AGE is 1, 2, or 3 (indicating under 18 years old)
+  filter(!(AGE %in% c(1, 2, 3)))
 
 #############################################
 # 3. Load and Process ACS Data
@@ -287,10 +294,22 @@ nsduh_mi <- bind_rows(nsduh_mi_data_list) %>% select(-Order)
 # 7. Merge All Datasets
 #############################################
 
+# Load 18+ population data based on 2017 estimates
+# Note: the population estimate is constant for all years
+pop18 <- read_csv("data/scprc-est2017-18+pop-res.csv") %>%
+  # Convert state names to lowercase for consistency using the "STATE" column
+  mutate(State = tolower(NAME)) %>%
+  # Select and rename the relevant column; using "POPEST18PLUS2017" as the population estimate
+  select(State, pop_18plus = POPEST18PLUS2017)
+
+# Check that each state appears only once (ensuring a one-to-many join later)
+if(any(duplicated(pop18$State))) {
+  warning("Duplicate state entries found in pop18. Please verify your CSV data.")
+}
+
 # Create a base grid of state-year combinations (2013-2017)
 base_df <- expand.grid(State = relevant_states, year = 2013:2017, stringsAsFactors = FALSE)
 
-# Merge MHCLD data (contains "State" and "year")
 # Process ACS data: pivot insurance and income data wider so each metric becomes a column
 acs_insurance_wide <- acs_insurance %>%
   pivot_wider(names_from = Metric, values_from = Value, names_prefix = "ins_")
@@ -311,15 +330,17 @@ p2_wide <- p2 %>%
 p2_unique <- p2_wide %>% group_by(State) %>% slice(1) %>% ungroup()
 p2_expanded <- base_df %>% left_join(p2_unique, by = "State")
 
-# Merge all datasets together on the base state-year grid
+# Merge all datasets together on the base state-year grid,
+# then merge the 18+ population data using a left join (one-to-many join on State)
 final_df <- base_df %>%
   left_join(mhcld_all, by = c("State", "year")) %>%
   left_join(acs_all, by = c("State", "year")) %>%
   left_join(nsduh_all, by = c("State", "year")) %>%
   left_join(kff_expanded, by = c("State", "year")) %>%
-  left_join(p2_expanded, by = c("State", "year"))
+  left_join(p2_expanded, by = c("State", "year")) %>%
+  left_join(pop18, by = "State")
 
-# Convert specific NSDUH variables to numeric after removing commas
+# Convert NSDUH variables to numeric after removing commas
 final_df <- final_df %>%
   mutate(`18 or Older Estimate_mi` = as.numeric(gsub(",", "", as.character(`18 or Older Estimate_mi`))),
          `18 or Older Estimate_mj` = as.numeric(gsub(",", "", as.character(`18 or Older Estimate_mj`))))
@@ -342,7 +363,14 @@ final_df <- final_df %>%
 # Subset to include only columns used in the regression model
 final_df <- final_df %>%
   select(State, year, SCHIZOFLG, Legalized, AGE, GENDER, ETHNIC, RACE, EDUC,
-         MentalIllnessYr, MarijuanaUseYr, MedianIncome, MeanIncome, Insurance, UrbanPop, Medicaid)
+         MentalIllnessYr, MarijuanaUseYr, MedianIncome, MeanIncome, Insurance, UrbanPop, Medicaid, pop_18plus)
+
+# Represent MentalIllnessYr and MarijuanaUseYr as a proportion of the state population
+final_df <- final_df %>%
+  mutate(
+    MentalIllnessYr = (MentalIllnessYr * 1000) / pop_18plus,
+    MarijuanaUseYr  = (MarijuanaUseYr * 1000)  / pop_18plus
+  )
 
 # Print column names for verification
 print(names(final_df))
@@ -350,18 +378,28 @@ print(names(final_df))
 # Write the final integrated dataset to a CSV file
 write_csv(final_df, "data/final_df.csv")
 
+# Write the first 500,000 rows to a CSV file
+write_csv(final_df %>% slice_head(n = 500000), "data/final_df_truncated.csv")
+
 #############################################
 # 8. Fit Logistic Regression Model
 #############################################
 
 # Fit a logistic regression model using the cleaned dataset
-model <- glm(SCHIZOFLG ~ Legalized + AGE + GENDER + ETHNIC +
-               # RACE +
+model <- glm(SCHIZOFLG ~ 
+               Legalized + 
+               AGE + 
+               GENDER + 
+               ETHNIC +
+               # RACE + # Omitted due to collinearity w/ ETHNIC
                EDUC +
-               MentalIllnessYr + MarijuanaUseYr +
+               MentalIllnessYr + 
+               MarijuanaUseYr +
                MedianIncome +
-               # MeanIncome +
-               Insurance + UrbanPop,
+               # MeanIncome + # Omitted due to collinearity w/ MedianIncome
+               # Medicaid + # Omitted since unique(final_df$Medicaid) = 1
+               Insurance + 
+               UrbanPop,
              data = final_df,
              family = binomial)
 
