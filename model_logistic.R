@@ -376,6 +376,18 @@ final_df <- final_df %>%
     MarijuanaUseYr  = (MarijuanaUseYr * 1000)  / pop_18plus
   )
 
+# --------------------------------------------------------------------
+# CONVERT MULTI-CATEGORY VARIABLES TO FACTORS (DUMMY VARIABLES)
+# --------------------------------------------------------------------
+final_df <- final_df %>%
+  mutate(
+    AGE    = factor(AGE),
+    GENDER = factor(GENDER),
+    ETHNIC = factor(ETHNIC),
+    RACE   = factor(RACE),
+    EDUC   = factor(EDUC)
+  )
+
 # Print column names for verification
 print(names(final_df))
 
@@ -390,6 +402,7 @@ write_csv(final_df %>% slice_head(n = 500000), "data/final_df_truncated.csv")
 #############################################
 
 # Fit a logistic regression model using the cleaned dataset
+# (We omit RACE due to collinearity with ETHNIC)
 model <- glm(SCHIZOFLG ~ 
                Legalized + 
                AGE + 
@@ -402,7 +415,7 @@ model <- glm(SCHIZOFLG ~
                MedianIncome +
                # MeanIncome + # Omitted due to collinearity w/ MedianIncome
                # Medicaid + # Omitted since unique(final_df$Medicaid) = 1
-               Insurance + 
+               # Insurance + # Omitted due to collinearity w/ MedianIncome
                UrbanPop,
              data = final_df,
              family = binomial)
@@ -415,16 +428,15 @@ summary(model)
 #############################################
 
 # Define the formula for the propensity score model (excluding outcomes and any collinear variables)
-ps_formula <- as.formula("Legalized ~ AGE + GENDER + ETHNIC + EDUC + MentalIllnessYr + 
-                         MarijuanaUseYr + MedianIncome + Insurance + UrbanPop")
+ps_formula <- as.formula("Legalized ~ AGE + GENDER + ETHNIC + EDUC + 
+                         MentalIllnessYr + MarijuanaUseYr + 
+                         MedianIncome + Insurance + UrbanPop")
 
 # Remove rows with NA in treatment and all covariates
 final_df_clean <- final_df %>% 
-  filter(complete.cases(Legalized, AGE, GENDER, ETHNIC, EDUC, MentalIllnessYr, MarijuanaUseYr, MedianIncome, Insurance, UrbanPop))
-
-# Verify there are no missing values in these variables
-summary(final_df_clean[, c("Legalized", "AGE", "GENDER", "ETHNIC", "EDUC",
-                           "MentalIllnessYr", "MarijuanaUseYr", "MedianIncome", "Insurance", "UrbanPop")])
+  filter(complete.cases(Legalized, AGE, GENDER, ETHNIC, EDUC, 
+                        MentalIllnessYr, MarijuanaUseYr, 
+                        MedianIncome, Insurance, UrbanPop))
 
 # Perform matching using nearest neighbor method (with a 1:1 ratio)
 m.out <- matchit(ps_formula, data = final_df_clean, method = "nearest")
@@ -442,11 +454,15 @@ matched_model <- glm(SCHIZOFLG ~
                        MentalIllnessYr + 
                        MarijuanaUseYr +
                        MedianIncome +
-                       Insurance + 
+                       # Insurance +  # Omitted due to collinearity w/ MedianIncome
                        UrbanPop,
                      data = matched_data,
                      family = binomial)
 summary(matched_model)
+
+#############################################
+# 10. Diagnostics
+#############################################
 
 # Compute predicted values and residuals
 predicted <- predict(matched_model, type = "response")

@@ -295,7 +295,7 @@ nsduh_mj <- bind_rows(nsduh_mj_data_list) %>% select(-Order)
 nsduh_mi <- bind_rows(nsduh_mi_data_list) %>% select(-Order)
 
 #############################################
-# 7. Merge All Datasets
+# 7. Merge All Datasets and Aggregate to State-Level
 #############################################
 
 # Load 18+ population data based on 2017 estimates
@@ -364,108 +364,108 @@ final_df <- final_df %>%
     Insurance       = `ins_ With health insurance coverage`
   )
 
-# Subset to include only columns used in the regression model
+# Subset to include only columns used in the original regression model
+# (Note: individual-level demographics such as AGE, GENDER, ETHNIC, RACE, EDUC are dropped in the aggregation)
 final_df <- final_df %>%
-  select(State, year, SCHIZOFLG, Legalized, AGE, GENDER, ETHNIC, RACE, EDUC,
+  select(State, year, SCHIZOFLG, Legalized, 
          MentalIllnessYr, MarijuanaUseYr, MedianIncome, MeanIncome, Insurance, UrbanPop, Medicaid, pop_18plus)
 
-# Represent MentalIllnessYr and MarijuanaUseYr as a proportion of the state population
+# Represent NSDUH estimates as a proportion of the state population
 final_df <- final_df %>%
   mutate(
     MentalIllnessYr = (MentalIllnessYr * 1000) / pop_18plus,
     MarijuanaUseYr  = (MarijuanaUseYr * 1000)  / pop_18plus
   )
 
-# Print column names for verification
-print(names(final_df))
+# --------------------------------------------------------------------
+# AGGREGATE INDIVIDUAL-LEVEL MHCLD DATA TO THE STATE-YEAR LEVEL
+# --------------------------------------------------------------------
+# For SCHIZOFLG (originally binary), we compute the average (i.e. the rate/proportion)
+final_df_state <- final_df %>%
+  group_by(State, year) %>%
+  summarise(
+    schizo_rate     = mean(SCHIZOFLG, na.rm = TRUE),
+    Legalized       = first(Legalized),
+    MentalIllnessYr = first(MentalIllnessYr),
+    MarijuanaUseYr  = first(MarijuanaUseYr),
+    MedianIncome    = first(MedianIncome),
+    UrbanPop        = first(UrbanPop),
+    Medicaid        = first(Medicaid),
+    pop_18plus      = first(pop_18plus)
+  ) %>%
+  ungroup()
 
-# Write the final integrated dataset to a CSV file
-write_csv(final_df, "data/final_df.csv")
-
-# Write the first 500,000 rows to a CSV file
-write_csv(final_df %>% slice_head(n = 500000), "data/final_df_truncated.csv")
+# Write the state-level aggregated dataset to CSV files
+write_csv(final_df_state, "data/final_df_state.csv")
+# Optionally, write a truncated version
+write_csv(final_df_state %>% slice_head(n = 500000), "data/final_df_state_truncated.csv")
 
 #############################################
-# 8. Fit Logistic Regression Model
+# 8. Fit Linear Regression Model (State-Level Outcome)
 #############################################
 
-# Fit a logistic regression model using the cleaned dataset
-model <- glm(SCHIZOFLG ~ 
-               Legalized + 
-               AGE + 
-               GENDER + 
-               ETHNIC +
-               # RACE + # Omitted due to collinearity w/ ETHNIC
-               EDUC +
-               MentalIllnessYr + 
-               MarijuanaUseYr +
-               MedianIncome +
-               # MeanIncome + # Omitted due to collinearity w/ MedianIncome
-               # Medicaid + # Omitted since unique(final_df$Medicaid) = 1
-               Insurance + 
-               UrbanPop,
-             data = final_df,
-             family = binomial)
+# Fit a linear regression model using the state-level aggregated dataset
+# Outcome: schizo_rate (numerical proportion)
+model_state <- lm(schizo_rate ~ 
+                    Legalized + 
+                    MentalIllnessYr + 
+                    MarijuanaUseYr +
+                    MedianIncome +
+                    UrbanPop,
+                  data = final_df_state)
 
 # Display model summary
-summary(model)
+summary(model_state)
 
 #############################################
-# 9. Propensity Score Matching
+# 9. Propensity Score Matching (State-Level)
 #############################################
 
-# Define the formula for the propensity score model (excluding outcomes and any collinear variables)
-ps_formula <- as.formula("Legalized ~ AGE + GENDER + ETHNIC + EDUC + MentalIllnessYr + 
-                         MarijuanaUseYr + MedianIncome + Insurance + UrbanPop")
+# Define the formula for the propensity score model (using state-level covariates)
+ps_formula_state <- as.formula("Legalized ~ MentalIllnessYr + MarijuanaUseYr + MedianIncome + UrbanPop")
 
 # Remove rows with NA in treatment and all covariates
-final_df_clean <- final_df %>% 
-  filter(complete.cases(Legalized, AGE, GENDER, ETHNIC, EDUC, MentalIllnessYr, MarijuanaUseYr, MedianIncome, Insurance, UrbanPop))
-
-# Verify there are no missing values in these variables
-summary(final_df_clean[, c("Legalized", "AGE", "GENDER", "ETHNIC", "EDUC",
-                           "MentalIllnessYr", "MarijuanaUseYr", "MedianIncome", "Insurance", "UrbanPop")])
+final_df_state_clean <- final_df_state %>% 
+  filter(complete.cases(Legalized, MentalIllnessYr, MarijuanaUseYr, MedianIncome, UrbanPop))
 
 # Perform matching using nearest neighbor method (with a 1:1 ratio)
-m.out <- matchit(ps_formula, data = final_df_clean, method = "nearest")
+m.out_state <- matchit(ps_formula_state, data = final_df_state_clean, method = "nearest")
 
 # Extract the matched dataset
-matched_data <- match.data(m.out)
+matched_data_state <- match.data(m.out_state)
 
-# Re-fit the Logistic Regression Model on the Matched Sample
-matched_model <- glm(SCHIZOFLG ~ 
-                       Legalized + 
-                       AGE + 
-                       GENDER + 
-                       ETHNIC +
-                       EDUC +
-                       MentalIllnessYr + 
-                       MarijuanaUseYr +
-                       MedianIncome +
-                       Insurance + 
-                       UrbanPop,
-                     data = matched_data,
-                     family = binomial)
-summary(matched_model)
+# Re-fit the linear regression model on the matched sample
+matched_model_state <- lm(schizo_rate ~ 
+                            Legalized + 
+                            MentalIllnessYr + 
+                            MarijuanaUseYr +
+                            MedianIncome +
+                            UrbanPop,
+                          data = matched_data_state)
+summary(matched_model_state)
 
-# Compute predicted values and residuals
-predicted <- predict(matched_model, type = "response")
-residuals <- residuals(matched_model, type = "pearson")  # Using Pearson residuals
+#############################################
+# 10. Diagnostics
+#############################################
+
+# Compute predicted values and residuals for the matched model
+predicted_state <- predict(matched_model_state)
+residuals_state <- residuals(matched_model_state)
 
 # Residuals vs Predicted Values Plot
-plot(predicted, residuals,
+plot(predicted_state, residuals_state,
      main = "Residuals vs Predicted Values",
      xlab = "Predicted Values (y_hat)",
      ylab = "Residuals")
 abline(h = 0, lty = 2)
 
 # Q-Q Plot for Residuals
-qqnorm(residuals, main = "Q-Q Plot of Residuals")
-qqline(residuals, col = "red", lwd = 2)
+qqnorm(residuals_state, main = "Q-Q Plot of Residuals")
+qqline(residuals_state, col = "red", lwd = 2)
 
 # Calculate VIF to check for multicollinearity
-vif_values <- vif(matched_model)
-print(vif_values)
+vif_values_state <- vif(matched_model_state)
+print(vif_values_state)
 
 # Export the Model Summary using stargazer
-stargazer(matched_model, type = "html", out = "model_summary.html")
+stargazer(matched_model_state, type = "html", out = "model_summary_state.html")
