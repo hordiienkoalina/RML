@@ -629,17 +629,95 @@ aggregated_state_df <- aggregated_state_df %>%
   left_join(age_processed, by = "State") %>%
   left_join(race_processed, by = "State")
 
+#####################################
+# 8. Load and Process Education Data
+#####################################
+
+# Read the education CSV
+educ_df <- read_csv("data/educ.csv")
+
+# 1. Clean column names
+names(educ_df) <- names(educ_df) %>% str_squish()
+
+# 2. Identify columns ending with "!!total!!estimate"
+pattern <- regex("!!total!!estimate$", ignore_case = TRUE)
+matching_cols <- names(educ_df)[-1][str_detect(names(educ_df)[-1], pattern)]
+
+if (length(matching_cols) == 0) {
+  warning("No columns matching '!!total!!estimate' found in educ.csv")
+} else {
+  cols_to_keep <- c("Label (Grouping)", matching_cols)
+  educ_df <- educ_df %>% select(all_of(cols_to_keep))
+}
+
+# 3. Pivot longer: split names into State / Measure / Metric
+educ_long <- educ_df %>%
+  pivot_longer(
+    cols       = -`Label (Grouping)`,
+    names_to   = c("State", "Measure", "Metric"),
+    names_pattern = "^(.*)!!(.*)!!(.*)$",
+    values_to  = "Count"
+  ) %>%
+  rename(EducationLevel = `Label (Grouping)`) %>%
+  mutate(
+    State = tolower(str_squish(State)),
+    EducationLevel = str_squish(EducationLevel),
+    Count = parse_number(Count)
+  )
+
+# 4. Pivot wider: one row per state, one column per education level
+educ_wide <- educ_long %>%
+  pivot_wider(
+    id_cols    = State,
+    names_from = EducationLevel,
+    values_from = Count,
+    values_fn  = first
+  )
+
+# Final processed education data
+educ_processed <- educ_wide
+
+# Removing unnecessary data
+educ_processed <- educ_processed[, -2] 
+educ_processed <- educ_processed[, 1:14]
+educ_processed <- educ_processed[, -c(2:6)]
+
+educ_processed <- educ_processed %>%
+  mutate(
+    frac_9th_12_nodiploma = `9th to 12th grade, no diploma` / `Population 25 years and over`,
+    frac_associate       = `Associate's degree`               / `Population 25 years and over`,
+    frac_bachelor        = `Bachelor's degree`                / `Population 25 years and over`,
+    frac_grad_prof       = `Graduate or professional degree`  / `Population 25 years and over`,
+    frac_hs_or_higher    = `High school graduate or higher`   / `Population 25 years and over`,
+    frac_less9           = `Less than 9th grade`              / `Population 25 years and over`
+  )
+
+aggregated_state_df <- aggregated_state_df %>%
+  left_join(
+    educ_processed %>% 
+      select(
+        State,
+        frac_9th_12_nodiploma,
+        frac_associate,
+        frac_bachelor,
+        frac_grad_prof,
+        frac_hs_or_higher,
+        frac_less9
+      ),
+    by = "State"
+  )
+
 write_csv(aggregated_state_df, "data/aggregated_state_df.csv")
 
 #############################################
-# 8. Prepare Data for Synth and Run Analysis
+# 9. Prepare Data for Synth and Run Analysis
 #############################################
 
 # Add a numeric state_id
 aggregated_state_df <- aggregated_state_df %>%
   mutate(
     state_id = as.numeric(factor(State)),
-    year = as.numeric(year)
+    year     = as.numeric(year)
   )
 
 # Identify the treated unit's numeric ID (California)
@@ -652,7 +730,7 @@ treatment_id <- aggregated_state_df %>%
 pre_treatment  <- 2013:2016
 post_treatment <- 2017:2022
 
-# Define predictor variables for Synth including age and race variables
+# Define predictor variables for Synth, now including education fractions
 predictors <- c(
   #"MarijuanaUseFrac", # omitted due to missing data
   #"MentalIllnessFrac", # omitted due to missing data
@@ -667,7 +745,14 @@ predictors <- c(
   "prop_45_49", "prop_50_54", "prop_55_59", "prop_60_64", "prop_65_69", 
   "prop_70_74", "prop_75_79", "prop_80_84", "prop_85_over",
   # Race proportions
-  "prop_white", "prop_black", "prop_american_indian", "prop_asian", "prop_native_hawaiian", "prop_some_other"
+  "prop_white", "prop_black", "prop_american_indian", "prop_asian", "prop_native_hawaiian", "prop_some_other",
+  # Education fractions
+  "frac_9th_12_nodiploma",
+  "frac_associate",
+  "frac_bachelor",
+  "frac_grad_prof",
+  "frac_hs_or_higher",
+  "frac_less9"
 )
 
 # Data preparation for Synth
