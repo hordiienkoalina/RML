@@ -51,3 +51,5 @@ rsconnect/
 /data
 .DS_Store
 *.Rproj
+
+!scm_data.csv

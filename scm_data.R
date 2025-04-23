@@ -30,6 +30,7 @@ library(stargazer)
 library(ggplot2)
 library(devtools)
 library(Synth)
+library(janitor)
 
 #############################################
 # 2. Load and Process MHCLD Data
@@ -258,99 +259,8 @@ p2 <- read_csv("data/P2-urban-rural-2020.csv") %>%
   ungroup() %>%
   select(-total_value)
 
-#############################################
-# 6. Load and Process NSDUH Data
-#############################################
-
-# Function to determine the number of rows to skip based on header keywords
-get_skip_value <- function(file, header_keywords = c("Order", "State")) {
-  lines <- readLines(file, n = 10)
-  header_line <- NA
-  for (i in seq_along(lines)) {
-    if (any(sapply(header_keywords, function(kw) grepl(paste0("^", kw), lines[i])))) {
-      header_line <- i
-      break
-    }
-  }
-  if (!is.na(header_line) && header_line > 1) {
-    return(header_line - 1)
-  } else {
-    return(5)  # Default skip value if header not found
-  }
-}
-
-# Define years for which NSDUH data are available
-years_nsduh <- c(2013, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023)
-nsduh_folders <- sapply(years_nsduh, function(yr) {
-  sprintf("data/NSDUH/NSDUHsaeTotalsCSVs%d", yr)
-}, USE.NAMES = FALSE)
-
-# Define relevant states for NSDUH data processing
-relevant_states <- c("oregon", "california", "colorado", "maine", "massachusetts", "nevada", "washington")
-
-# Initialize lists to accumulate NSDUH data for Marijuana Use and Mental Illness
-nsduh_mj_data_list <- vector("list", length(relevant_states))
-nsduh_mi_data_list <- vector("list", length(relevant_states))
-names(nsduh_mj_data_list) <- names(nsduh_mi_data_list) <- relevant_states
-
-for (folder in nsduh_folders) {
-  if (!dir.exists(folder)) {
-    warning(sprintf("Folder not found: %s. Skipping this folder.", folder))
-    next
-  }
-  
-  this_year <- as.numeric(str_extract(basename(folder), "\\d{4}"))
-  csv_files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
-  
-  if (length(csv_files) == 0) {
-    warning(sprintf("No CSV files found in folder: %s. Skipping this folder.", folder))
-    next
-  }
-  
-  # Identify CSV files for Marijuana Use (pattern "27") and Mental Illness (pattern "02")
-  mj_files <- csv_files[grepl("27", csv_files, ignore.case = TRUE)]
-  mi_files <- csv_files[grepl("02", csv_files, ignore.case = TRUE)]
-  
-  if (length(mj_files) != 1) {
-    warning(sprintf("Expected one Marijuana Use file in folder %s, found %d. Skipping this folder.", folder, length(mj_files)))
-    next
-  }
-  if (length(mi_files) != 1) {
-    warning(sprintf("Expected one Mental Illness file in folder %s, found %d. Skipping this folder.", folder, length(mi_files)))
-    next
-  }
-  
-  mj_file <- mj_files[1]
-  mi_file <- mi_files[1]
-  
-  if (!file.exists(mj_file) || !file.exists(mi_file)) {
-    warning("One or both file paths do not exist. Skipping this folder.")
-    next
-  }
-  
-  print(sprintf("Using Marijuana file: %s", mj_file))
-  print(sprintf("Using Mental Illness file: %s", mi_file))
-  
-  skip_mj <- get_skip_value(mj_file)
-  skip_mi <- get_skip_value(mi_file)
-  
-  nsduh_mj <- read_csv(mj_file, skip = skip_mj, col_types = cols(.default = "c")) %>%
-    mutate(State = tolower(State), year = this_year)
-  nsduh_mi <- read_csv(mi_file, skip = skip_mi, col_types = cols(.default = "c")) %>%
-    mutate(State = tolower(State), year = this_year)
-  
-  # Filter and accumulate data for each relevant state
-  for (st in relevant_states) {
-    nsduh_mj_data_list[[st]] <- bind_rows(nsduh_mj_data_list[[st]], nsduh_mj %>% filter(State == st))
-    nsduh_mi_data_list[[st]] <- bind_rows(nsduh_mi_data_list[[st]], nsduh_mi %>% filter(State == st))
-  }
-}
-
-nsduh_mj <- bind_rows(nsduh_mj_data_list) %>% select(-Order)
-nsduh_mi <- bind_rows(nsduh_mi_data_list) %>% select(-Order)
-
 #######################
-# 7. Merge All Datasets
+# 6. Merge All Datasets
 #######################
 
 # Load 18+ population data based on 2017 estimates
@@ -372,9 +282,6 @@ acs_insurance_wide <- acs_insurance %>%
 acs_income_wide <- acs_income %>%
   pivot_wider(names_from = Metric, values_from = Value, names_prefix = "inc_")
 acs_all <- full_join(acs_insurance_wide, acs_income_wide, by = c("State", "year"))
-
-# Merge NSDUH data for Marijuana Use and Mental Illness
-nsduh_all <- full_join(nsduh_mj, nsduh_mi, by = c("State", "year"), suffix = c("_mj", "_mi"))
 
 # Process KFF data: ensure one row per state and expand to state-year level
 kff_unique <- kff %>% distinct(State, .keep_all = TRUE)
@@ -410,32 +317,6 @@ p2_ready <- p2_expanded %>%
 # ----- Merge All Datasets Using the Base State-Year Grid -----
 pop18_extrapolated <- base_df %>% left_join(pop18, by = "State")
 
-# ----- Prepare and Aggregate NSDUH Data -----
-nsduh_all <- nsduh_all %>%
-  rename(
-    Estimate_mj = `18 or Older Estimate_mj`,
-    Estimate_mi = `18 or Older Estimate_mi`
-  ) %>%
-  mutate(
-    Estimate_mj = as.numeric(Estimate_mj),
-    Estimate_mi = as.numeric(Estimate_mi)
-  )
-nsduh_agg <- nsduh_all %>%
-  group_by(State, year) %>%
-  summarize(
-    MarijuanaUseYr  = mean(Estimate_mj, na.rm = TRUE),
-    MentalIllnessYr = mean(Estimate_mi, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  left_join(select(pop18_extrapolated, State, year, pop_18plus), by = c("State", "year")) %>%
-  mutate(
-    MarijuanaUseFrac  = if_else(!is.na(MarijuanaUseYr) & !is.na(pop_18plus),
-                                MarijuanaUseYr / pop_18plus, NA_real_),
-    MentalIllnessFrac = if_else(!is.na(MentalIllnessYr) & !is.na(pop_18plus),
-                                MentalIllnessYr / pop_18plus, NA_real_)
-  ) %>%
-  select(-pop_18plus)
-
 # Remove the undesired "year" column from p2_ready before joining
 p2_ready_clean <- p2_ready %>% select(-year)
 p2_extrapolated <- base_df %>% left_join(p2_ready_clean, by = "State")
@@ -444,14 +325,12 @@ distinct_years <- unique(p2_extrapolated$year)
 print(distinct_years)
 
 aggregated_state_df <- base_df %>%
-  left_join(nsduh_agg, by = c("State", "year")) %>%
   left_join(acs_ready, by = c("State", "year")) %>%
   left_join(p2_extrapolated, by = c("State", "year")) %>%
   left_join(pop18_extrapolated, by = c("State", "year")) %>%
   left_join(kff_ready, by = c("State", "year")) %>%
   left_join(mhcld_agg, by = c("State", "year")) %>%
-  distinct(State, year, .keep_all = TRUE) %>%
-  select(-MentalIllnessYr, -MarijuanaUseYr, -Proportion_Total)
+  distinct(State, year, .keep_all = TRUE)
 
 # ----- Prepare Race Data ------
 df <- read_csv("data/race.csv")
@@ -629,6 +508,110 @@ aggregated_state_df <- aggregated_state_df %>%
   left_join(age_processed, by = "State") %>%
   left_join(race_processed, by = "State")
 
+#################################
+# 7. Load and Process NSDUH Data
+#################################
+
+# 7.1 Find all Tab02 & Tab27 CSVs under data/NSDUH (recursively)
+nsduh_files <- list.files(
+  path       = "data/NSDUH",
+  pattern    = "Tab(02|27)-\\d{4}\\.csv$",
+  full.names = TRUE,
+  recursive  = TRUE
+)
+cat(">> Found NSDUH files:\n"); print(nsduh_files)
+
+# 7.2 Helper to read one CSV and pull “18+” or “18 or Older” Estimate
+load_18plus <- function(path) {
+  cat("\n----\nReading:", path, "\n")
+  
+  # detect header row (quoted or unquoted)
+  lines <- readLines(path, n = 20, encoding = "latin1")
+  hdr_i <- which(str_detect(
+    lines,
+    regex('^"?Order"?\\s*,\\s*"?State"?', ignore_case = TRUE)
+  ))
+  if (length(hdr_i) != 1) {
+    stop("✖ Cannot detect header row in ", basename(path))
+  }
+  skip_n <- hdr_i - 1
+  cat("Detected header at line", hdr_i, "→ skip =", skip_n, "\n")
+  
+  # peek at columns
+  tmp <- read_csv(path, skip = skip_n, n_max = 0, col_types = cols(.default = "c"))
+  cat(" Columns after skip:\n"); print(names(tmp))
+  
+  # load & clean
+  df <- read_csv(path, skip = skip_n, col_types = cols(.default = "c")) %>%
+    clean_names()
+  cat(" Cleaned names:\n"); print(names(df))
+  
+  # pick the right “18+” column
+  possible <- c("x18_or_older_estimate", "x18_estimate")
+  key_col  <- intersect(possible, names(df))
+  if (length(key_col) != 1) {
+    stop("✖ Neither '18 or Older' nor '18+ Estimate' found in ", basename(path))
+  }
+  cat("Using column:", key_col, "\n")
+  
+  # extract
+  out <- df %>%
+    select(state, raw_value = all_of(key_col)) %>%
+    mutate(
+      state = tolower(state),
+      year  = as.integer(str_extract(basename(path), "\\d{4}")),
+      Value = na_if(as.numeric(str_remove_all(raw_value, ",")), 
+                    -9) * 1000   # convert from thousands to units
+                      ) %>%
+    select(state, year, Value)
+  
+  cat(" First few rows:\n"); print(head(out))
+  return(out)
+}
+
+# 7.3 Load & join Marijuana use (Tab27)
+mar_files <- grep("Tab27", nsduh_files, value = TRUE)
+cat("\n>> Tab27 (MarijuanaUse) files:\n"); print(mar_files)
+
+mar_long <- map_dfr(mar_files, load_18plus)
+cat("\n>> Combined MarijuanaUse rows:\n"); print(head(mar_long))
+
+# 7.4 Load & join Mental illness (Tab02)
+ment_files <- grep("Tab02", nsduh_files, value = TRUE)
+cat("\n>> Tab02 (MentalIllness) files:\n"); print(ment_files)
+
+ment_long <- map_dfr(ment_files, load_18plus)
+cat("\n>> Combined MentalIllness rows:\n"); print(head(ment_long))
+
+# ---- NSDUH Values as Fractions ------
+# Rename the NSDUH counts
+mar_counts <- mar_long  %>% rename(mar_count  = Value)
+ment_counts <- ment_long %>% rename(ment_count = Value)
+
+# Join them both to pop18_extrapolated
+nsduh_frac <- pop18_extrapolated %>%
+  # pop18_extrapolated has State, year, pop_18plus
+  left_join(mar_counts,  by = c("State" = "state",  "year")) %>%
+  left_join(ment_counts, by = c("State" = "state",  "year")) %>%
+  
+  # Compute fractions (no longer in thousands)
+  mutate(
+    mar_frac  = mar_count  / pop_18plus,
+    ment_frac = ment_count / pop_18plus
+  ) %>%
+  
+  select(State, year, mar_frac, ment_frac)
+
+aggregated_state_df <- aggregated_state_df %>%
+  left_join(
+    nsduh_frac %>% select(State, year, mar_frac, ment_frac),
+    by = c("State", "year")
+  )
+
+aggregated_state_df %>% 
+  select(State, year, mar_frac, ment_frac) %>% 
+  head()
+
 #####################################
 # 8. Load and Process Education Data
 #####################################
@@ -707,103 +690,17 @@ aggregated_state_df <- aggregated_state_df %>%
     by = "State"
   )
 
-write_csv(aggregated_state_df, "data/aggregated_state_df.csv")
+#####################################################
+# 9. Final Changes to the Aggregated State Dataframe
+#####################################################
 
-#############################################
-# 9. Prepare Data for Synth and Run Analysis
-#############################################
+aggregated_state_df <- aggregated_state_df %>% 
+  select(-Proportion_Total, -total)
 
-# Add a numeric state_id
 aggregated_state_df <- aggregated_state_df %>%
   mutate(
     state_id = as.numeric(factor(State)),
     year     = as.numeric(year)
   )
 
-# Identify the treated unit's numeric ID (California)
-treatment_id <- aggregated_state_df %>%
-  filter(State == "california") %>%
-  pull(state_id) %>%
-  unique()
-
-# Define pre- and post-treatment windows
-pre_treatment  <- 2013:2016
-post_treatment <- 2017:2022
-
-# Define predictor variables for Synth, now including education fractions
-predictors <- c(
-  #"MarijuanaUseFrac", # omitted due to missing data
-  #"MentalIllnessFrac", # omitted due to missing data
-  "Insurance",
-  "MedianIncome",
-  "MeanIncome",
-  "UrbanPop",
-  "pop_18plus",
-  "Medicaid",
-  # Age group proportions
-  "prop_20_24", "prop_25_29", "prop_30_34", "prop_35_39", "prop_40_44", 
-  "prop_45_49", "prop_50_54", "prop_55_59", "prop_60_64", "prop_65_69", 
-  "prop_70_74", "prop_75_79", "prop_80_84", "prop_85_over",
-  # Race proportions
-  "prop_white", "prop_black", "prop_american_indian", "prop_asian", "prop_native_hawaiian", "prop_some_other",
-  # Education fractions
-  "frac_9th_12_nodiploma",
-  "frac_associate",
-  "frac_bachelor",
-  "frac_grad_prof",
-  "frac_hs_or_higher",
-  "frac_less9"
-)
-
-# Data preparation for Synth
-dp.out <- dataprep(
-  foo                   = aggregated_state_df,
-  predictors            = predictors,
-  predictors.op         = "mean",
-  time.predictors.prior = pre_treatment,
-  dependent             = "SCHIZOFLG_prev",
-  unit.variable         = "state_id",
-  unit.names.variable   = "State",
-  time.variable         = "year",
-  treatment.identifier  = treatment_id,
-  controls.identifier   = c("alabama",
-                            "arkansas",
-                            # "georgia", # omitted due to missing data
-                            "idaho",
-                            "indiana",
-                            "iowa",
-                            #"kansas", # omitted due to missing data
-                            "kentucky",
-                            "louisiana",
-                            "mississippi",
-                            "missouri",
-                            "nebraska",
-                            #"north_dakota", # omitted due to missing data
-                            "oklahoma",
-                            #"south_carolina", # omitted due to missing data
-                            #"south_dakota", # omitted due to missing data
-                            "tennessee",
-                            "texas",
-                            "virginia",
-                            #"west_virginia", # omitted due to missing data
-                            "utah"),
-  time.optimize.ssr     = pre_treatment,
-  time.plot             = c(pre_treatment, post_treatment)
-)
-
-# Run Synth
-synth.out <- synth(dp.out)
-
-# Inspect results (balance and weights)
-synth.tables <- synth.tab(dataprep.res = dp.out, synth.res = synth.out)
-print(synth.tables)
-
-# Plot the treated vs. synthetic trajectory
-path.plot(
-  synth.res    = synth.out,
-  dataprep.res = dp.out,
-  Ylab         = "SCHIZOFLG_prev",
-  Xlab         = "Year",
-  Legend       = c("California", "Synthetic"),
-  tr.intake    = 2017
-)
+write_csv(aggregated_state_df, "scm_data.csv")
