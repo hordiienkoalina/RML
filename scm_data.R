@@ -38,19 +38,19 @@ library(janitor)
 
 # Define treatment states with corresponding STATEFIP codes
 treatment_states <- list(
-  oregon        = 41,
   california    = 6,
-  colorado      = 8,
   maine         = 23,
-  massachusetts = 25,
   nevada        = 32,
-  washington    = 53
+  michigan      = 26,
+  arizona       = 4
 )
 
 # Define additional control states (these did not legalize during 2013-2017)
 control_states <- list(
-  alabama        = 1,
-  arkansas       = 5,
+  alabama        =  1,
+  arkansas       =  5,
+  delaware       = 10,
+  florida        = 12,
   georgia        = 13,
   idaho          = 16,
   indiana        = 18,
@@ -61,15 +61,12 @@ control_states <- list(
   mississippi    = 28,
   missouri       = 29,
   nebraska       = 31,
+  north_carolina = 37,
   north_dakota   = 38,
+  ohio           = 39,
   oklahoma       = 40,
-  south_carolina = 45,
-  south_dakota   = 46,
-  tennessee      = 47,
-  texas          = 48,
-  virginia       = 51,
-  west_virginia  = 54,
-  utah           = 49
+  pennsylvania   = 42,
+  south_carolina = 45
 )
 
 # Combine treatment and control states
@@ -77,13 +74,11 @@ all_states <- c(treatment_states, control_states)
 
 # Legalization years for treatment states
 legalization_years <- list(
-  washington    = 2014,
-  colorado      = 2014,
-  oregon        = 2015,
-  massachusetts = 2016,
   california    = 2017,
   nevada        = 2017,
-  maine         = 2017
+  maine         = 2017,
+  michigan      = 2018,
+  arizona       = 2020
 )
 
 # Set legalization years for control states to NA
